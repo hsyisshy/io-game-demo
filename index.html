@@ -19,17 +19,52 @@
   }
   #status {
     margin-bottom: 8px;
+    height: 20px;
+  }
+  #gameArea {
+    position: relative;
   }
   canvas {
     background: #2a2a2a;
     border: 2px solid #555;
+    display: block;
+  }
+  /* 右上角排行榜，用一般 DOM 疊在 canvas 上面，不用另外畫在畫布裡 */
+  #leaderboard {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    min-width: 140px;
+    background: rgba(0, 0, 0, 0.5);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+  #leaderboard h3 {
+    margin: 0 0 6px;
+    font-size: 13px;
+    color: #ffd54f;
+  }
+  #leaderboard ol {
+    margin: 0;
+    padding-left: 18px;
+  }
+  #leaderboard li.me {
+    color: #ffd54f;
+    font-weight: bold;
   }
 </style>
 </head>
 <body>
 
   <div id="status">連線中...</div>
-  <canvas id="gameCanvas"></canvas>
+  <div id="gameArea">
+    <canvas id="gameCanvas"></canvas>
+    <div id="leaderboard">
+      <h3>排行榜（依質量）</h3>
+      <ol id="leaderboardList"></ol>
+    </div>
+  </div>
 
   <script>
     // ------------------------------------------------------------
@@ -45,14 +80,17 @@
     const statusEl = document.getElementById('status');
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
+    const leaderboardListEl = document.getElementById('leaderboardList');
 
     // 預設畫布大小，等收到伺服器的 init 訊息後會用伺服器的世界大小覆蓋
     canvas.width = 800;
     canvas.height = 600;
 
     let myPlayerId = null;   // 我自己的 player id（伺服器分配）
-    let playerSize = 20;     // 方塊邊長，等 init 訊息回來後更新
-    let latestPlayers = [];  // 最新一次從伺服器收到的所有玩家狀態
+    let latestPlayers = [];  // 最新一次從伺服器收到的所有玩家狀態（含 x, y, color, radius, mass）
+    let latestFood = [];     // 最新一次從伺服器收到的所有食物狀態
+
+    let eatenMessageUntil = 0; // 「你被吃掉了」提示要顯示到什麼時間點（用 Date.now() 比對）
 
     // ---- 建立 WebSocket 連線 ----
     // 自動組出 ws:// 或 wss:// + 目前網址的 host（同一台伺服器、同一個 port）
@@ -79,13 +117,41 @@
         myPlayerId = msg.id;
         canvas.width = msg.world.width;
         canvas.height = msg.world.height;
-        playerSize = msg.world.playerSize;
-        statusEl.textContent = `你是玩家 #${myPlayerId}（用 WASD 或方向鍵移動）`;
       } else if (msg.type === 'state') {
-        // 伺服器廣播的最新狀態：所有玩家的 id / x / y / color
+        // 伺服器廣播的最新狀態：所有玩家與食物的 x / y / color / radius
         latestPlayers = msg.players;
+        latestFood = msg.food;
+        updateStatusText();
+        updateLeaderboard(msg.leaderboard);
+      } else if (msg.type === 'eaten') {
+        // 我被別人吃掉了，短暫顯示提示文字
+        eatenMessageUntil = Date.now() + 2000;
       }
     });
+
+    // 依照目前自己的質量更新狀態列文字；若剛被吃掉，改顯示提示訊息
+    function updateStatusText() {
+      if (Date.now() < eatenMessageUntil) {
+        statusEl.textContent = '你被吃掉了！重新開始長大吧';
+        return;
+      }
+      const me = latestPlayers.find((p) => p.id === myPlayerId);
+      if (me) {
+        statusEl.textContent = `你是玩家 #${myPlayerId} ｜ 質量：${me.mass}（用 WASD 或方向鍵移動，吃食物長大，體型比你小 15% 以上的玩家可以吃掉他們）`;
+      }
+    }
+
+    // 依照伺服器送來的排行榜資料，更新畫面右上角的排行榜列表
+    function updateLeaderboard(leaderboard) {
+      if (!leaderboard) return;
+      leaderboardListEl.innerHTML = '';
+      for (const entry of leaderboard) {
+        const li = document.createElement('li');
+        li.textContent = `#${entry.id}（${entry.mass}）`;
+        if (entry.id === myPlayerId) li.className = 'me';
+        leaderboardListEl.appendChild(li);
+      }
+    }
 
     // ------------------------------------------------------------
     // 鍵盤輸入：只記錄「目前哪些鍵被按著」，實際移動邏輯完全在伺服器端
@@ -135,16 +201,34 @@
     function render() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      for (const p of latestPlayers) {
-        ctx.fillStyle = p.color;
-        ctx.fillRect(p.x, p.y, playerSize, playerSize);
+      // 先畫食物（小圓點），畫在底層，玩家會疊在食物上面
+      for (const f of latestFood) {
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, f.radius, 0, Math.PI * 2);
+        ctx.fillStyle = f.color;
+        ctx.fill();
+      }
 
-        // 把自己的方塊加上白色外框，方便在畫面上一眼認出自己
+      // 再畫玩家（圓形，大小依照伺服器算出的 radius）
+      for (const p of latestPlayers) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.fill();
+
+        // 把自己的圓加上白色外框，方便在畫面上一眼認出自己
         if (p.id === myPlayerId) {
           ctx.strokeStyle = '#fff';
           ctx.lineWidth = 2;
-          ctx.strokeRect(p.x, p.y, playerSize, playerSize);
+          ctx.stroke();
         }
+
+        // 在圓心標示目前質量，方便玩家判斷誰比較大
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(p.mass, p.x, p.y);
       }
 
       requestAnimationFrame(render);
