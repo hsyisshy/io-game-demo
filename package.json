@@ -1,0 +1,12 @@
+{
+  "name": "io-game-demo",
+  "version": "1.0.0",
+  "description": "最基礎的 .io 多人連線網頁遊戲 Demo（伺服器主導架構，原生 WebSocket）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

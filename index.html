@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>.io 多人連線 Demo</title>
+<style>
+  /* 簡單置中版面，畫布加個邊框方便看到世界邊界 */
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #1e1e1e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: sans-serif;
+    color: #eee;
+  }
+  #status {
+    margin-bottom: 8px;
+  }
+  canvas {
+    background: #2a2a2a;
+    border: 2px solid #555;
+  }
+</style>
+</head>
+<body>
+
+  <div id="status">連線中...</div>
+  <canvas id="gameCanvas"></canvas>
+
+  <script>
+    // ------------------------------------------------------------
+    // 前端邏輯：
+    // 1. 建立 WebSocket 連線
+    // 2. 監聽鍵盤事件，記錄「目前」按鍵狀態，並持續回報給伺服器
+    // 3. 接收伺服器廣播的所有玩家座標，用 requestAnimationFrame 畫出來
+    //
+    // 注意：前端完全不自己計算移動座標，座標永遠以伺服器廣播的為準，
+    // 這就是「伺服器主導 (Authoritative Server)」的精神。
+    // ------------------------------------------------------------
+
+    const statusEl = document.getElementById('status');
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // 預設畫布大小，等收到伺服器的 init 訊息後會用伺服器的世界大小覆蓋
+    canvas.width = 800;
+    canvas.height = 600;
+
+    let myPlayerId = null;   // 我自己的 player id（伺服器分配）
+    let playerSize = 20;     // 方塊邊長，等 init 訊息回來後更新
+    let latestPlayers = [];  // 最新一次從伺服器收到的所有玩家狀態
+
+    // ---- 建立 WebSocket 連線 ----
+    // 自動組出 ws:// 或 wss:// + 目前網址的 host（同一台伺服器、同一個 port）
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${location.host}`);
+
+    ws.addEventListener('open', () => {
+      statusEl.textContent = '已連線，等待伺服器分配角色...';
+    });
+
+    ws.addEventListener('close', () => {
+      statusEl.textContent = '連線已中斷，請重新整理頁面';
+    });
+
+    ws.addEventListener('error', () => {
+      statusEl.textContent = '連線發生錯誤';
+    });
+
+    ws.addEventListener('message', (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === 'init') {
+        // 伺服器告訴我：我的 id 是誰、世界大小是多少
+        myPlayerId = msg.id;
+        canvas.width = msg.world.width;
+        canvas.height = msg.world.height;
+        playerSize = msg.world.playerSize;
+        statusEl.textContent = `你是玩家 #${myPlayerId}（用 WASD 或方向鍵移動）`;
+      } else if (msg.type === 'state') {
+        // 伺服器廣播的最新狀態：所有玩家的 id / x / y / color
+        latestPlayers = msg.players;
+      }
+    });
+
+    // ------------------------------------------------------------
+    // 鍵盤輸入：只記錄「目前哪些鍵被按著」，實際移動邏輯完全在伺服器端
+    // ------------------------------------------------------------
+    const input = { up: false, down: false, left: false, right: false };
+
+    // 支援 WASD 與方向鍵兩種按法
+    const KEY_MAP = {
+      'KeyW': 'up',    'ArrowUp': 'up',
+      'KeyS': 'down',  'ArrowDown': 'down',
+      'KeyA': 'left',  'ArrowLeft': 'left',
+      'KeyD': 'right', 'ArrowRight': 'right',
+    };
+
+    let inputChanged = false;
+
+    window.addEventListener('keydown', (e) => {
+      const dir = KEY_MAP[e.code];
+      if (dir && !input[dir]) {
+        input[dir] = true;
+        inputChanged = true;
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      const dir = KEY_MAP[e.code];
+      if (dir && input[dir]) {
+        input[dir] = false;
+        inputChanged = true;
+      }
+    });
+
+    // 每次按鍵狀態改變時，立刻把最新狀態傳給伺服器
+    // （伺服器會用固定 tick rate 讀取這個狀態來計算座標，
+    //  這裡用「狀態改變才送」而不是「每個 requestAnimationFrame 都送」，可以省頻寬）
+    function sendInputIfChanged() {
+      if (inputChanged && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', ...input }));
+        inputChanged = false;
+      }
+    }
+    setInterval(sendInputIfChanged, 1000 / 30); // 最多每秒送 30 次
+
+    // ------------------------------------------------------------
+    // 畫面渲染：用 requestAnimationFrame 持續清除畫布並重繪所有玩家
+    // ------------------------------------------------------------
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (const p of latestPlayers) {
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, playerSize, playerSize);
+
+        // 把自己的方塊加上白色外框，方便在畫面上一眼認出自己
+        if (p.id === myPlayerId) {
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(p.x, p.y, playerSize, playerSize);
+        }
+      }
+
+      requestAnimationFrame(render);
+    }
+    requestAnimationFrame(render);
+  </script>
+
+</body>
+</html>
